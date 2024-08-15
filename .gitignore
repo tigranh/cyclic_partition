@@ -30,3 +30,4 @@
 *.exe
 *.out
 *.app
+/bin_vs2022
