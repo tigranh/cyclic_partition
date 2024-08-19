@@ -10,6 +10,8 @@
 #include "partition_hoare.hpp"
 #include "partition_cyclic.hpp"
 
+#include "large_object.hpp"
+
 
 /// Runs general tests on provided function, which is expected to partition 
 /// given sequence.
@@ -41,7 +43,7 @@ void test_partition_on_int_sequence(
 				10 );  // the predicate is "x < 10"
 
 		int* mid = (*partition_f)( a, a+n, pred );
-		assert( mid == a + 3 );  // Size of left part should be '3'
+		assert( mid == a + 4 );  // Size of left part should be '4'
 		assert( std::is_partitioned( a, a+n, pred ) );
 	}
 	{
@@ -173,7 +175,7 @@ clock_type::duration run_partitioning_on_integers(
 		int N, 
 		int min_value, int max_value, 
 		int pivot, 
-		int* (partition_f)( int*, int*, std::binder2nd< std::less< int > > ), 
+		int* (*partition_f)( int*, int*, std::binder2nd< std::less< int > > ), 
 		int T, 
 		Gen& gen )
 {
@@ -187,15 +189,73 @@ clock_type::duration run_partitioning_on_integers(
 	typedef std::binder2nd< std::less< int > > pred_t;
 			// Type of predicate, used for partitioning
 	pred_t pred( std::less< int >(), pivot );
-			// Preicate is "x < pivot"
+			// Predicate is "x < pivot"
 	std::uniform_int_distribution<> offset_dist( 0, N-1 );
 			// Random offsets, for cyclic rotation of array, between 
-			// adjacent partitioning calls
+			// adjacent calls to partition
 	clock_type::duration overall_duration( 0 );
 	for ( int t = 0; t < T; ++t ) {
 		// Call the partitioning function
 		clock_type::time_point start_time = clock_type::now();
-		int* mid = (*partition_f)( a.data(), a.data() + N, pred );
+		int* mid = (*partition_f)( 
+				a.data(), 
+				a.data() + N, 
+				pred );
+		clock_type::time_point end_time = clock_type::now();
+		overall_duration += (end_time - start_time);
+		// Somehow alter the global collector variable
+		collector += (mid - a.data());
+		// Cyclic rotate, to prepare for the next partitioning call
+		int offset = offset_dist( gen );
+		std::rotate( 
+				a.begin(), 
+				a.begin() + offset, 
+				a.end() );
+	}
+	std::cout << std::chrono::duration_cast< std::chrono::milliseconds >( overall_duration ).count()
+			<< " msc" << std::endl;
+	return overall_duration;
+}
+
+
+/// Runs provided partitioning function 'partition_f', for 'T' times, 
+/// each time on a random array of length 'N', with uniformly distributed 
+/// "large objects" inside it. After partitioning, ratio of left part and 
+/// right part will be [left_ratio, 1.0 - left_ratio].
+/// Measures and prints overall time (in milliseconds), spend on all those 
+/// partitioning calls.
+template< typename LargeObject, typename Gen >
+clock_type::duration run_partitioning_on_large_objects( 
+		int N, 
+		double left_ratio, 
+		LargeObject* (*partition_f)( LargeObject*, LargeObject*, std::binder2nd< std::less< LargeObject > > ),
+		int T, 
+		Gen& gen )
+{
+	std::vector< LargeObject > a( N );
+			// Partitioning array of length 'N'
+	generate_random_large_objects_sequence< LargeObject >(
+			N, 
+			a.begin(), 
+			gen );  // Generating the random array
+	const LargeObject pivot = generate_pivot_large_object< LargeObject >(
+			left_ratio, 
+			gen );  // Generate the pivot "large object"
+	typedef std::binder2nd< std::less< LargeObject > > pred_t;
+			// Type of predicate, used for partitioning
+	pred_t pred( std::less< LargeObject >(), pivot );
+			// The predicate is "x < pivot"
+	std::uniform_int_distribution<> offset_dist( 0, N-1 );
+			// Random offsets, for cyclic rotation of array, between 
+			// adjacent calls to partition
+	clock_type::duration overall_duration( 0 );
+	for ( int t = 0; t < T; ++t ) {
+		// Call the partitioning function
+		clock_type::time_point start_time = clock_type::now();
+		LargeObject* mid = (*partition_f)( 
+				a.data(), 
+				a.data() + N, 
+				pred );
 		clock_type::time_point end_time = clock_type::now();
 		overall_duration += (end_time - start_time);
 		// Somehow alter the global collector variable
@@ -220,146 +280,120 @@ int main( int argc, char* argv[] )
 
 	std::cout << " --- Testing partition algorithms --- " << std::endl;
 
-	// Type of predicate, used for partitioning
-	typedef std::binder2nd< std::less< int > > pred_t;
+	{
+		typedef std::binder2nd< std::less< int > > pred_t;
+				// Type of predicate, used for partitioning
 
-	std::cout << "\t partition_hoare< int*, ... >() ..." << std::endl;
-	test_partition_on_int_sequence( 
-			& ml::algorithm::partition_hoare< int*, pred_t >, 
-			gen );
+		std::cout << "\t partition_hoare< int*, ... >() ..." << std::endl;
+		test_partition_on_int_sequence( 
+				& ml::algorithm::partition_hoare< int*, pred_t >, 
+				gen );
 
-	std::cout << "\t partition_cyclic< int*, ... >() ..." << std::endl;
-	test_partition_on_int_sequence( 
-			& ml::algorithm::partition_cyclic< int*, pred_t >, 
-			gen );
+		std::cout << "\t partition_cyclic< int*, ... >() ..." << std::endl;
+		test_partition_on_int_sequence( 
+				& ml::algorithm::partition_cyclic< int*, pred_t >, 
+				gen );
+	}
 
 	std::cout << " --- Benchmarking partition algorithms --- " << std::endl;
 
-	std::cout << "partitioning on arrays of integers ..." << std::endl;
-	const int N = 10'000'000;  // Length of the array of integers
-	const int T = 100;         // Number of runs
+	{
+		std::cout << "partitioning on arrays of integers ..." << std::endl;
 
-	// left/right lengths ratio - 1:1
-	std::cout << "\t left/right lengths ratio (after partitioning) - 1:1" << std::endl;
-	std::cout << "\t\t Hoare scheme : ";
-	run_partitioning_on_integers(
-			N, 
-			0, 50'000'000, 
-			25'000'000, 
-			& ml::algorithm::partition_hoare< int*, pred_t >, 
-			T, 
-			gen );
-	std::cout << "\t\t Cyclic partition : ";
-	run_partitioning_on_integers(
-			N, 
-			0, 50'000'000, 
-			25'000'000, 
-			& ml::algorithm::partition_cyclic< int*, pred_t >, 
-			T, 
-			gen );
+		typedef std::binder2nd< std::less< int > > pred_t;
+				// Type of predicate, used for partitioning
 
-	// left/right lengths ratio - 1:3
-	std::cout << "\t left/right lengths ratio (after partitioning) - 1:3" << std::endl;
-	std::cout << "\t\t Hoare scheme : ";
-	run_partitioning_on_integers(
-			N, 
-			0, 50'000'000, 
-			12'500'000, 
-			& ml::algorithm::partition_hoare< int*, pred_t >, 
-			T, 
-			gen );
-	std::cout << "\t\t Cyclic partition : ";
-	run_partitioning_on_integers(
-			N, 
-			0, 50'000'000, 
-			12'500'000, 
-			& ml::algorithm::partition_cyclic< int*, pred_t >, 
-			T, 
-			gen );
+		const int N = 1'000'000;   // Length of the array of integers
+		const int T = 500;         // Number of runs
+		std::cout << "\t Array length : " << N << std::endl;
+		std::cout << "\t Number of runs : " << T << std::endl;
 
+		// left/right lengths ratio - 1:1
+		std::cout << "\t left/right lengths ratio (after partitioning) - 1:1" << std::endl;
+		std::cout << "\t\t Hoare scheme : ";
+		run_partitioning_on_integers(
+				N, 
+				0, 50'000'000, 
+				25'000'000, 
+				& ml::algorithm::partition_hoare< int*, pred_t >, 
+				T, 
+				gen );
+		std::cout << "\t\t Cyclic partition : ";
+		run_partitioning_on_integers(
+				N, 
+				0, 50'000'000, 
+				25'000'000, 
+				& ml::algorithm::partition_cyclic< int*, pred_t >, 
+				T, 
+				gen );
 
+		// left/right lengths ratio - 1:3
+		std::cout << "\t left/right lengths ratio (after partitioning) - 1:3" << std::endl;
+		std::cout << "\t\t Hoare scheme : ";
+		run_partitioning_on_integers(
+				N, 
+				0, 50'000'000, 
+				12'500'000, 
+				& ml::algorithm::partition_hoare< int*, pred_t >, 
+				T, 
+				gen );
+		std::cout << "\t\t Cyclic partition : ";
+		run_partitioning_on_integers(
+				N, 
+				0, 50'000'000, 
+				12'500'000, 
+				& ml::algorithm::partition_cyclic< int*, pred_t >, 
+				T, 
+				gen );
+	}
 
+	{
+		std::cout << "partitioning on arrays of \"large objects\" ..." << std::endl;
 
-	// ToDo: 
-	// 
-	// Test (with debugging) the written tests and benchmarking
-	//
-	// Write bench also for large objects
-	//
-	// Perhaps move testing and benchmarking functions into separate files
+		typedef large_object< unsigned short, 256 > large_object_t;
+				// What we take as "large object"
+		typedef std::binder2nd< std::less< large_object_t > > pred_t;
+				// The predicate, used for comparison of "large objects"
 
+		const int N = 25'000;    // Length of the array of "large objects"
+		const int T = 500;       // Number of runs
+		std::cout << "\t Array length : " << N << std::endl;
+		std::cout << "\t Number of runs : " << T << std::endl;
 
+		// left/right lengths ratio - 1:1
+		std::cout << "\t left/right lengths ratio (after partitioning) - 1:1" << std::endl;
+		std::cout << "\t\t Hoare scheme : ";
+		run_partitioning_on_large_objects(
+				N, 
+				0.5, 
+				& ml::algorithm::partition_hoare< large_object_t*, pred_t >, 
+				T, 
+				gen );
+		std::cout << "\t\t Cyclic partition : ";
+		run_partitioning_on_large_objects(
+				N, 
+				0.5, 
+				& ml::algorithm::partition_cyclic< large_object_t*, pred_t >, 
+				T, 
+				gen );
 
-/*
-	typedef int data_t;  // Type of data, on which Q-ary search will run
-
-	const int N = 7'500;            // Length of the sorted array
-	data_t A[ N ];                  // The sorted array
-	const data_t start_q = 0;              // Start of the query range
-	const data_t finish_q = 10'000'000;    // Finish of the query range
-	const data_t step_q = 1;               // The step inside the query range
-
-	std::cout << "\t ... generating sorted array of length N=" << N 
-			<< ", with values in [" << start_q << ", " << finish_q << "]," 
-			<< std::endl;
-	static_assert( 
-			std::is_integral_v< data_t > || std::is_floating_point_v< data_t >,
-			"Can't generate array of random numbers with given data type." );
-	if constexpr ( std::is_integral_v< data_t > )
-		prepare_sorted_int_array( 
-				A, N, 
-				start_q, finish_q, gen );
-	else if constexpr ( std::is_floating_point_v< data_t > )
-		prepare_sorted_real_array( 
-				A, N, 
-				start_q, finish_q, gen );
-
-	std::cout << "\t ... running search algorithms for "
-			<< (finish_q - start_q) / step_q << " times each," << std::endl;
-
-	std::cout << "\t std::lower_bound<...>() ... ";
-	run_searches( & std::lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-	std::cout << "\t _2_ary_search<...>() ... ";
-	run_searches( & ml::algorithm::_2_ary_lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-	std::cout << "\t _3_ary_search<...>() ... ";
-	run_searches( & ml::algorithm::_3_ary_lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-	std::cout << "\t _4_ary_search<...>() ... ";
-	run_searches( & ml::algorithm::_4_ary_lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-	std::cout << "\t _5_ary_search<...>() ... ";
-	run_searches( & ml::algorithm::_5_ary_lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-	std::cout << "\t _6_ary_search<...>() ... ";
-	run_searches( & ml::algorithm::_6_ary_lower_bound< data_t*, data_t >,
-			A, A+N, 
-			start_q, finish_q, step_q );
-
-
-	// - Try move the array data to heap
-	//    or to global memory
-
-	// + Try playing with array length
-	//
-
-	// + Try searches on other data types
-	//
-
-	// + Try on other compilers
-	//
-*/
+		// left/right lengths ratio - 1:3
+		std::cout << "\t left/right lengths ratio (after partitioning) - 1:3" << std::endl;
+		std::cout << "\t\t Hoare scheme : ";
+		run_partitioning_on_large_objects(
+				N, 
+				0.25, 
+				& ml::algorithm::partition_hoare< large_object_t*, pred_t >, 
+				T, 
+				gen );
+		std::cout << "\t\t Cyclic partition : ";
+		run_partitioning_on_large_objects(
+				N, 
+				0.25, 
+				& ml::algorithm::partition_cyclic< large_object_t*, pred_t >, 
+				T, 
+				gen );
+	}
 
 	std::cout << "Final value of the 'collector' variable (to prevent compiler optimizations): " 
 			<< collector << std::endl;
